@@ -1,0 +1,5 @@
+node_modules
+.tor-data
+.git
+*.log
+preview*.png

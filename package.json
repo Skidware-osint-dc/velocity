@@ -1,0 +1,26 @@
+{
+  "name": "velocity-proxy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Stable + fast web proxy: Ultraviolet architecture, Scramjet engine",
+  "type": "module",
+  "dependencies": {
+    "@mercuryworkshop/bare-as-module3": "^2.2.5",
+    "@mercuryworkshop/bare-mux": "2.1.9",
+    "@mercuryworkshop/epoxy-transport": "1.1.0",
+    "@mercuryworkshop/libcurl-transport": "1.5.2",
+    "@mercuryworkshop/scramjet": "1.1.0",
+    "@mercuryworkshop/wisp-js": "^0.5.0",
+    "@tomphttp/bare-server-node": "^2.0.6",
+    "compression": "^1.8.2",
+    "express": "^5.3.0",
+    "ws": "^8.22.0"
+  }
+}

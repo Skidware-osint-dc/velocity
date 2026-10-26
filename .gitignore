@@ -1,0 +1,4 @@
+node_modules/
+.tor-data/
+*.log
+.DS_Store
