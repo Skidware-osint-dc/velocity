@@ -6,6 +6,9 @@
  *   - libcurl  (wisp, Firefox-grade TLS fingerprint)  [default]
  *   - epoxy    (wisp, lightweight rust TLS)
  *   - bare     (classic Bare v3, maximum compatibility)
+ *
+ * Egress "regions" (InvisiProxy LTS pattern): the wisp server itself owns the
+ * upstream proxy, so ANY transport can ride Tor — see src/wisp.js.
  */
 import express from "express";
 import compression from "compression";
@@ -19,16 +22,17 @@ import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
 import { createBareServer } from "@tomphttp/bare-server-node";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
+import { startWispRegionPool } from "./wisp.js";
 
 const TOR_SOCKS = process.env.TOR_SOCKS || "127.0.0.1:9050";
+const SITE_PASSWORD = process.env.SITE_PASSWORD || "";
+const SITE_USER = process.env.SITE_USER || "user";
 
 logging.set_level(process.env.WISP_LOG === "info" ? logging.INFO : logging.NONE);
 Object.assign(wisp.options, {
 	allow_udp_streams: false,
-	// Required for Tor routing: the libcurl transport proxies through wisp into
-	// the local Tor SOCKS port (127.0.0.1:9050). This opens loopback to ANY wisp
-	// client though — treat the wisp endpoint as localhost-privileged and don't
-	// expose this server untrusted-publicly without additional hardening.
+	// Legacy fallback only (when wispurr can't spawn). Loopback opened here so the
+	// client-side libcurl proxy option can still reach the local Tor SOCKS port.
 	allow_loopback_ips: true,
 });
 
@@ -70,6 +74,21 @@ app.use((req, res, next) => {
   next();
 });
 
+// Optional site lock (Incognito-style deploy protection): set SITE_PASSWORD to
+// gate everything behind HTTP Basic auth. SITE_USER customizes the username.
+app.use((req, res, next) => {
+	if (!SITE_PASSWORD || req.path === "/healthz") return next();
+	const h = String(req.headers.authorization || "");
+	if (h.toLowerCase().startsWith("basic ")) {
+		const decoded = Buffer.from(h.slice(6), "base64").toString("utf8");
+		const i = decoded.indexOf(":");
+		const u = decoded.slice(0, i), p = decoded.slice(i + 1);
+		if ((!process.env.SITE_USER || u === SITE_USER) && p === SITE_PASSWORD) return next();
+	}
+	res.setHeader("WWW-Authenticate", 'Basic realm="Velocity"');
+	res.status(401).send("🔒 Velocity is locked.");
+});
+
 app.use(compression());
 
 // ---- static engine / transport assets (immutable, fingerprinted by version) ----
@@ -107,13 +126,25 @@ app.get("/suggest", async (req, res) => {
   }
 });
 
+// what the client is allowed to do, decided server-side
+app.get("/api/capabilities", (req, res) => {
+	res.json({
+		wispEngine: wispPool ? "wispurr" : "wisp-js",
+		regions: wispPool ? ["", ...wispPool.regions.keys()] : [""],
+		torMode: wispPool?.regions.has("tor") ? "server" : "client",
+		customWispAllowed: true,
+		siteLocked: !!SITE_PASSWORD,
+	});
+});
+
 app.get("/healthz", (req, res) => {
 	res.json({
 		ok: true,
 		name: "velocity",
 		version: pkg.version,
 		uptime: Math.round(process.uptime()),
-		wisp: "up",
+		wisp: wispPool ? "wispurr" : "wisp-js",
+		regions: wispPool ? ["", ...wispPool.regions.keys()] : [""],
 		tor: Date.now() - torState.at < 30_000 ? torState.running : null, // refreshes via /api/tor/status
 		engines: {
 			scramjet: read("@mercuryworkshop/scramjet"),
@@ -129,7 +160,7 @@ app.get("/api/tor/status", async (req, res) => {
 	const [host, port] = TOR_SOCKS.split(":");
 	const alive = await new Promise((resolve) => {
 		const sock = net.connect(Number(port), host);
-		sock.setTimeout(1500);
+	sock.setTimeout(1500);
 		const done = (ok) => {
 			sock.destroy();
 			resolve(ok);
@@ -154,31 +185,76 @@ const bare = createBareServer("/bare/", {
 	connectionLimiter: { maxConnectionsPerIP: 500, windowDuration: 60, blockDuration: 10 },
 });
 
+// ---- wisp: spawn region workers (InvisiProxy LTS pattern) ----
+let wispPool = null;
+try {
+	wispPool = await startWispRegionPool();
+} catch (e) {
+	console.error("[wisp] wispurr unavailable — falling back to wisp-js:", e.message);
+}
+
+const WISP_BASE = "/wisp/";
+const wispRegionOf = (url) => {
+	const p = String(url || "").split(/[?#]/)[0];
+	if (p === WISP_BASE) return "";
+	if (p.startsWith(WISP_BASE) && p.endsWith("/")) {
+		const r = p.slice(WISP_BASE.length, -1);
+		if (wispPool?.regions.has(r)) return r;
+	}
+	return null;
+};
+
+// reject upgrades that don't originate from our own site — closes the classic
+// "steal someone's wisp endpoint for a different proxy" abuse vector
+function fromOwnSite(req) {
+	const { origin, host } = req.headers;
+	if (!origin) return true; // non-browser clients (curl/scripts) have no origin
+	try {
+		return new URL(origin).hostname === new URL(`http://${host}`).hostname;
+	} catch {
+		return false;
+	}
+}
+
 const server = createServer();
 server.on("request", (req, res) => {
   if (bare.shouldRoute(req)) bare.routeRequest(req, res);
   else app(req, res);
 });
 server.on("upgrade", (req, socket, head) => {
-  try {
-    if (bare.shouldRoute(req)) return bare.routeUpgrade(req, socket, head);
-    if (req.url && req.url.endsWith("/wisp/")) return wisp.routeRequest(req, socket, head);
-    socket.end();
-  } catch {
-    socket.destroy();
-  }
+	try {
+		if (bare.shouldRoute(req)) return bare.routeUpgrade(req, socket, head);
+		if (!fromOwnSite(req)) return socket.destroy();
+		const region = wispRegionOf(req.url);
+		if (region !== null && wispPool) {
+			req.url = WISP_BASE; // strip region suffix; worker owns the proxy choice
+			const target = region ? wispPool.regions.get(region) : wispPool.default;
+			if (target?.ready) return target.route(req, socket, head);
+			return socket.destroy();
+		}
+		// legacy fallback: wisp-js, no region support (Tor via client-side proxy)
+		if (!wispPool && req.url?.endsWith("/wisp/")) return wisp.routeRequest(req, socket, head);
+		socket.end();
+	} catch {
+		socket.destroy();
+	}
 });
 
 const port = Number(process.env.PORT) || 8080;
 server.listen(port, "0.0.0.0", () => {
   console.log(`⚡ Velocity proxy listening on http://0.0.0.0:${port}`);
   console.log(`   engine:   Scramjet ${read("@mercuryworkshop/scramjet")}`);
-  console.log(`   wisp:     /wisp/    bare: /bare/`);
+  console.log(`   wisp:     /wisp/ (${wispPool ? "wispurr; regions: " + (wispPool.regions.size ? [...wispPool.regions.keys()].join(",") : "none") : "wisp-js fallback"})   bare: /bare/`);
+  console.log(`   features: ${SITE_PASSWORD ? "site-locked" : "open"} · tor upstream: ${TOR_SOCKS}`);
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
     console.log(`${sig} received, shutting down`);
+    if (wispPool) {
+      wispPool.default.stop();
+      for (const r of wispPool.regions.values()) r.stop();
+    }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 300);
   });

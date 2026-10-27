@@ -1,6 +1,6 @@
 # ⚡ Velocity
 
-A web proxy with **Ultraviolet's battle-tested architecture**, **Scramjet's high-performance rewriting engine**, and **Holy Unblocker–style stealth features** — including **Tor / .onion routing**.
+A web proxy with **Ultraviolet's battle-tested architecture**, **Scramjet's high-performance rewriting engine**, **Holy Unblocker / InvisiProxy LTS**-grade egress architecture, and **Incognito-style** apps & games launcher — including **Tor / .onion routing for every transport**.
 
 - **Engine:** [Scramjet](https://github.com/MercuryWorkshop/scramjet) (interception-based rewriter, WASM-powered JS rewriting)
 - **Transports:** libcurl → wisp *(default, best TLS fingerprint — also the Tor transport)*, epoxy → wisp, or classic Bare v3 — switchable live in Settings
@@ -13,14 +13,19 @@ A web proxy with **Ultraviolet's battle-tested architecture**, **Scramjet's high
 browser ──service worker──▶ Scramjet rewriter (scramjet.all.js + wasm)
                 │
                 ▼  bare-mux connection (per-tab transport)
-        ┌───────┴──────────────────┐
-   wisp /wisp/                 bare /bare/
-   (libcurl / epoxy transports)    (v3 server)
-        │
-        ▼  libcurl may attach a SOCKS5 proxy:
-   tor daemon (127.0.0.1:9050) ──▶ Tor network ──▶ clearnet exits & .onion services
-        └───────────────────────────────────────▶ target websites (direct)
+        ┌───────┴────────────────────────┐
+   wisp /wisp/                       bare /bare/
+   wispurr region workers (Go):        (v3 server)
+     ''   → default worker ─────────▶ target websites (direct)
+     tor/ → tor worker ──▶ socks5h://127.0.0.1:9050 ─▶ Tor network
+                                                        ├─▶ clearnet exits
+                                                        └─▶ .onion services
+     <custom regions via REGION_*_SOCKS env>
 ```
+Because the SOCKS hop lives **server-side in the wisp worker** (InvisiProxy LTS'
+pattern), *every* wisp transport — libcurl **and** epoxy — can ride Tor and load
+onions. A transparent fallback (client-side libcurl SOCKS) kicks in if the Go
+workers can't start.
 
 | Path | Purpose |
 | ---- | ------- |
@@ -48,24 +53,26 @@ tor --SocksPort 127.0.0.1:9050       # any SOCKS5 tor daemon works
 npm install && npm start
 ```
 
-- Toggle **"Route traffic through Tor"** in Settings — a purple 🧅 indicator in the
-  header reports the daemon's reachability (checked via `/api/tor/status`).
-- Typing a `*.onion` URL (or clicking one of the onion quick-links) **auto-enables
-  Tor** and switches transports for you.
-- Tor forces the **libcurl** transport (it's the only transport with SOCKS proxy
-  support); epoxy/bare don't proxy. Toggling Tor on/off reconfigures the transport
-  live, without a reload.
-- `TOR_SOCKS=host:port` env var points the status probe at an external Tor daemon
-  (e.g. a sidecar container or `tor:9050` in a compose network).
-- The included `Dockerfile` bundles tor and starts it via `scripts/start.sh`
-  (`ENABLE_TOR=0` disables it).
+- Toggle **"Route traffic through Tor"** in Settings — indicators in the home nav
+  *and* the browser toolbar report daemon reachability (`/api/tor/status`) plus
+  whether egress rides the server-side region or the client-side SOCKS fallback.
+- Typing a `*.onion` URL (or clicking an onion quick-link) **auto-enables Tor**.
+- With the bundled `wispurr` server, Tor is a **region** (`/wisp/tor/`) and works
+  on libcurl *or* epoxy — great on mobile, where Velocity auto-defaults to epoxy.
+- If the Go workers can't spawn, Velocity falls back to wisp-js + the classic
+  Holy Unblocker wiring (client-side `proxy: socks5h://…`, which forces libcurl).
+- Extra regions: set `REGION_EU_SOCKS=socks5h://127.0.0.1:7000` (etc.) and the
+  server hosts `/wisp/eu/` automatically. A custom `wss://…` wisp endpoint can
+  also be set per-user in Settings ("Custom wisp server").
+- `TOR_SOCKS=host:port` repoints the status probe; the `Dockerfile` bundles tor
+  and starts it via `scripts/start.sh` (`ENABLE_TOR=0` disables it).
 
-**Heads up:** the server enables `allow_loopback_ips` on the wisp endpoint so the
-libcurl ↔ Tor SOCKS hop on `127.0.0.1:9050` can connect. This does **not** expose
-user traffic to loopback — wisp traffic is initiated by your own transport
-sessions, not arbitrary user requests — but be aware if you customize wisp rules.
-Onion service trust-model/fingerprint caveats of Tor Browser still apply; this is
-a proxy through Tor, not Tor Browser.
+**Hardening** (also lifted from InvisiProxy's wisp config): UDP streams off,
+direct/private-IP egress off, mail ports (25/465/587) blacklisted, per-IP
+connection caps + flood protection, and websocket upgrades are rejected unless
+they originate from this site itself (no third-party wisp hijacking).
+Onion trust-model and fingerprinting caveats of Tor Browser still apply —
+this is a proxy through Tor, not Tor Browser.
 
 ## Run it
 
@@ -92,11 +99,13 @@ behind TLS for real deployments.
 
 ## Stealth features
 
-- **Multiple tabs** — `Ctrl+T` new tab, `Ctrl+W` close, click purple-dot onion tabs
+- **Multiple tabs** — `Ctrl+T` new tab, `Ctrl+W` close, purple-dot onion tabs
 - **Tab disguise** — retitle the browser tab as Google, Classroom, Docs, or custom
 - **Panic key** — press `` ` `` (configurable) to instantly navigate the whole tab away
 - **Stealth window** — one click embeds Velocity in a full-window `about:blank` iframe
 - **History** — recent sites as launcher chips, clearable
+- **Apps & Games library** — 23-tile launcher (cloud gaming, social, tools);
+  every tile opens *through the proxy* (Incognito-style, minus the downloads)
 
 ## Settings
 
@@ -108,7 +117,9 @@ tab), tab disguise, panic key/target. History lives in `vx.history`.
 
 - [Scramjet](https://github.com/MercuryWorkshop/scramjet) — Mercury Workshop (MIT / AGPL bundled components)
 - [Ultraviolet](https://github.com/titaniumnetwork-dev/ultraviolet) — Titanium Network (design lineage)
-- [Holy Unblocker](https://github.com/browser-vm/Holy-Unblocker) — the Tor wiring approach (`proxy: 'socks5h://localhost:9050'`) and stealth UX lineage
+- [Holy Unblocker](https://github.com/browser-vm/Holy-Unblocker) / [InvisiProxy LTS](https://github.com/InvisiProxy/InvisiProxyLTS) — the Tor wiring lineage, evolved here into server-side wisp regions with hardening config; mobile→epoxy transport rule
+- [Incognito](https://github.com/amethystnetwork-dev/Incognito) — apps & games launcher concept, deploy-time site-lock pattern
+- [wispurr](https://github.com/sylvieisnton/wispurr) — Go wisp server with per-region upstream proxies
 - [bare-mux](https://github.com/MercuryWorkshop/bare-mux), epoxy, libcurl-transport, wisp-js — Mercury Workshop
 - [@tomphttp/bare-server-node](https://github.com/tomphttp/bare-server-node) (MIT)
 

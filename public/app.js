@@ -79,24 +79,55 @@
 	let booting = null;
 
 	const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
-	const wispURL = () =>
-		(location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/wisp/";
+
+	// server capabilities: tells us whether Tor egress is a wisp *region*
+	// (server-side SOCKS, InvisiProxy style) or needs the client-side proxy
+	let caps = { wispEngine: "wisp-js", regions: [""], torMode: "client", customWispAllowed: true };
+	const capsReady = fetch("/api/capabilities")
+		.then((r) => (r.ok ? r.json() : null))
+		.then((c) => { if (c) caps = c; })
+		.catch(() => {});
+
+	// a user-supplied wisp endpoint (InvisiProxy "CustomWisp") — used verbatim
+	const validCustomWisp = () => {
+		if (!settings.customWisp) return false;
+		try {
+			const u = new URL(settings.customWisp);
+			return (u.protocol === "wss:" || u.protocol === "ws:") && u.pathname.endsWith("/");
+		} catch {
+			return false;
+		}
+	};
+	const wispURL = (region = "") => {
+		if (validCustomWisp()) return settings.customWisp;
+		const proto = location.protocol === "https:" ? "wss://" : "ws://";
+		return proto + location.host + "/wisp/" + (region ? region + "/" : "");
+	};
+	// Tor-through-region: any transport works because the server owns the SOCKS hop
+	const regionActive = () =>
+		settings.tor && caps.torMode === "server" && caps.regions.includes("tor") && !validCustomWisp();
+
 	const TRANSPORTS = {
-		libcurl: () => ["/libcurl/index.mjs", [{ websocket: wispURL() }]],
-		epoxy: () => ["/vendor/epoxy/index.mjs", [{ wisp: wispURL() }]],
+		libcurl: () => ["/libcurl/index.mjs", [{ websocket: wispURL(regionActive() ? "tor" : "") }]],
+		epoxy: () => ["/vendor/epoxy/index.mjs", [{ wisp: wispURL(regionActive() ? "tor" : "") }]],
 		bare: () => ["/baremod/index.mjs", [location.origin + "/bare/"]],
-		// Tor: libcurl speaks SOCKS5 through the wisp tunnel into the local
-		// Tor daemon. socks5h => hostname resolution happens at the proxy
-		// (required for .onion).
+		// Legacy client-side Tor: libcurl attaches SOCKS5 through the wisp
+		// tunnel into the daemon. socks5h => hostname resolution at the proxy.
 		tor: () => ["/libcurl/index.mjs", [{ websocket: wispURL(), proxy: TOR_PROXY }]],
 	};
-	const effectiveTransport = () => (settings.tor ? "tor" : settings.transport);
+	const effectiveTransport = () => {
+		if (!settings.tor) return settings.transport;
+		if (regionActive()) return settings.transport === "bare" ? "libcurl" : settings.transport; // bare is HTTP, can't take regions
+		return "tor"; // fallback mode: forced libcurl + SOCKS option
+	};
 
+	let lastTransportKey = "";
 	async function selectTransport() {
 		const [mod, opts] = (TRANSPORTS[effectiveTransport()] || TRANSPORTS.libcurl)();
-		if ((await connection.getTransport()) !== mod || mod === "/libcurl/index.mjs") {
-			// always re-set for libcurl so a proxy option flip takes effect
+		const key = mod + "|" + JSON.stringify(opts);
+		if (key !== lastTransportKey) {
 			await connection.setTransport(mod, opts);
+			lastTransportKey = key;
 		}
 	}
 
@@ -106,25 +137,34 @@
 		el.textContent = text;
 	}
 
+	const torIndicators = ["#tor-indicator", "#tor-indicator-2"]; // home nav + browser toolbar
 	async function refreshTorIndicator() {
-		const el = $("#tor-indicator");
+		const els = torIndicators.map((s) => $(s));
+		const paint = (cls, html, title) => {
+			for (const el of els) {
+				if (!el) continue;
+				el.className = "status " + cls;
+				el.innerHTML = html;
+				el.title = title || "";
+				el.hidden = false;
+			}
+		};
 		if (!settings.tor) {
-			el.hidden = true;
+			for (const el of els) if (el) el.hidden = true;
 			return;
 		}
-		el.hidden = false;
+		paint("status-warn", TOR_ICON + " tor…", "");
 		try {
 			const r = await fetch("/api/tor/status").then((r) => r.json());
+			const mode = regionActive() ? "region" : caps.torMode === "server" ? "region" : "socks";
 			if (r.running) {
-				el.className = "status status-ok";
-				el.innerHTML = TOR_ICON + " tor online";
+				paint("status-ok", TOR_ICON + " tor online",
+					`Tor egress via ${mode === "region" ? "wisp region worker" : "client SOCKS"} (${r.socks})`);
 			} else {
-				el.className = "status status-bad";
-				el.innerHTML = TOR_ICON + " tor offline";
+				paint("status-bad", TOR_ICON + " tor offline", "Tor daemon not reachable at " + r.socks);
 			}
 		} catch {
-			el.className = "status status-warn";
-			el.textContent = "🧅 tor ?";
+			paint("status-warn", TOR_ICON + " tor ?", "");
 		}
 	}
 
@@ -133,6 +173,7 @@
 		if (booting) return booting;
 		booting = (async () => {
 			setStatus("warn", "starting…");
+			await capsReady; // region / torMode known before first transport choice
 			scramjet = new ScramjetController({
 				prefix: PREFIX,
 				files: {
@@ -479,9 +520,18 @@
 	 * ------------------------------------------------------------- */
 	const modal = $("#settings");
 	function syncTransportEnabled() {
-		// Tor forces the libcurl transport (it's the only one with SOCKS5 support)
-		$("#set-transport").disabled = settings.tor;
-		if (settings.tor) $("#set-transport").value = "libcurl";
+		// In server-region mode Tor works over libcurl OR epoxy; in the legacy
+		// fallback Tor must force libcurl (only transport with SOCKS support).
+		const serverTor = caps.torMode === "server" && caps.regions.includes("tor");
+		$("#set-transport").disabled = settings.tor && !serverTor;
+		if (settings.tor && !serverTor) $("#set-transport").value = "libcurl";
+		const note = $("#tor-note");
+		if (note)
+			note.textContent = settings.tor
+				? serverTor
+					? ".onion sites work; everything exits via Tor. Works with libcurl & epoxy (server-side region)."
+					: ".onion sites work; everything exits via Tor. Forces the libcurl transport."
+				: ".onion sites work; everything exits via Tor.";
 	}
 	function openSettings() {
 		$("#set-tor").checked = settings.tor;
@@ -493,6 +543,7 @@
 		$("#set-cloak-title").value = settings.cloakTitle;
 		$("#set-panic-key").value = settings.panicKey;
 		$("#set-panic-url").value = settings.panicUrl;
+		$("#set-customwisp").value = settings.customWisp || "";
 		$("#cloak-title-wrap").hidden = settings.cloak !== "custom";
 		syncTransportEnabled();
 		modal.hidden = false;
@@ -515,17 +566,27 @@
 		settings.cloakTitle = $("#set-cloak-title").value;
 		settings.panicKey = $("#set-panic-key").value;
 		settings.panicUrl = $("#set-panic-url").value.trim() || DEFAULTS.panicUrl;
+		const cw = $("#set-customwisp").value.trim();
+		settings.customWisp = cw || "";
+		if (cw && !validCustomWisp()) {
+			toast("Custom wisp must be a ws:// or wss:// URL ending in /");
+			settings.customWisp = "";
+		}
 		saveSettings();
 		applyCloak();
 		modal.hidden = true;
 		try {
+			const tabAtSave = currentTab();
+			const urlAtSave = tabAtSave?.url;
 			await boot();
 			await selectTransport(); // transport AND tor both live here
 			refreshTorIndicator();
 			if (settings.tor) toast("🧅 Tor routing on — traffic exits via Tor");
-			// re-navigate the active tab so the new transport takes effect immediately
+			else if (validCustomWisp()) toast("Custom wisp server active");
+			// re-navigate so the new transport takes effect — but never stomp a
+			// navigation the user started while we were swapping transports
 			const tab = currentTab();
-			if (tab && tab.url) tab.frame.go(tab.url);
+			if (tab && tab === tabAtSave && tab.url && tab.url === urlAtSave) tab.frame.go(tab.url);
 			if (settings.codec !== prevCodec && scramjet) {
 				// ScramjetConfig.codec stores SOURCE STRINGS (functions can't be
 				// structured-cloned into IndexedDB), so stringify before passing.
@@ -549,6 +610,59 @@
 	$("#close-settings").addEventListener("click", () => (modal.hidden = true));
 	modal.addEventListener("click", (e) => {
 		if (e.target === modal) modal.hidden = true;
+	});
+
+	/* ---------------------------------------------------------------
+	 * Apps & Games launcher (Incognito-style) — everything opens
+	 * through the proxy, so nothing here touches your real IP.
+	 * ------------------------------------------------------------- */
+	const APPS = [
+		// cloud & web gaming
+		{ n: "GeForce NOW", u: "https://play.geforcenow.com", i: "⚡", c: "#76b900" },
+		{ n: "Xbox Cloud", u: "https://www.xbox.com/play", i: "🎮", c: "#107c10" },
+		{ n: "now.gg", u: "https://now.gg", i: "📱", c: "#8e5cf7" },
+		{ n: "Poki", u: "https://poki.com", i: "🕹️", c: "#ff4d6d" },
+		{ n: "CrazyGames", u: "https://www.crazygames.com", i: "🃏", c: "#7c4dff" },
+		{ n: "itch.io", u: "https://itch.io/games/html5", i: "🎲", c: "#fa5c5c" },
+		{ n: "Neal.fun", u: "https://neal.fun", i: "🌀", c: "#00b8d4" },
+		{ n: "Hacker Typer", u: "https://hackertyper.net", i: "⌨️", c: "#00c853" },
+		// social & apps
+		{ n: "Discord", u: "https://discord.com/app", i: "💬", c: "#5865f2" },
+		{ n: "Spotify", u: "https://open.spotify.com", i: "🎧", c: "#1db954" },
+		{ n: "TikTok", u: "https://www.tiktok.com", i: "🎵", c: "#ff2d55" },
+		{ n: "YouTube", u: "https://www.youtube.com", i: "▶️", c: "#ff0033" },
+		{ n: "Twitch", u: "https://www.twitch.tv", i: "📺", c: "#9146ff" },
+		{ n: "Reddit", u: "https://www.reddit.com", i: "🗞️", c: "#ff4500" },
+		{ n: "Instagram", u: "https://www.instagram.com", i: "📸", c: "#e1306c" },
+		{ n: "X / Twitter", u: "https://x.com", i: "🐦", c: "#1d9bf0" },
+		{ n: "Pinterest", u: "https://www.pinterest.com", i: "📌", c: "#e60023" },
+		// tools
+		{ n: "Google Docs", u: "https://docs.google.com", i: "📄", c: "#4285f4" },
+		{ n: "Maps", u: "https://www.google.com/maps", i: "🗺️", c: "#34a853" },
+		{ n: "Wayback", u: "https://web.archive.org", i: "🕰️", c: "#8a8a8a" },
+		{ n: "Translate", u: "https://translate.google.com", i: "🌐", c: "#4285f4" },
+		{ n: "Duolingo", u: "https://www.duolingo.com", i: "🦉", c: "#58cc02" },
+		{ n: "Wikipedia", u: "https://www.wikipedia.org", i: "📚", c: "#b8b8b8" },
+	];
+	const appsModal = $("#apps");
+	{
+		const grid = $("#apps-grid");
+		for (const a of APPS) {
+			const b = document.createElement("button");
+			b.className = "app-tile";
+			b.innerHTML = `<span class="app-ic" style="background:${a.c}22;color:${a.c}">${a.i}</span><span>${a.n}</span>`;
+			b.title = a.u;
+			b.addEventListener("click", () => {
+				appsModal.hidden = true;
+				go(a.u);
+			});
+			grid.appendChild(b);
+		}
+	}
+	$("#btn-apps").addEventListener("click", () => (appsModal.hidden = false));
+	$("#close-apps").addEventListener("click", () => (appsModal.hidden = true));
+	appsModal.addEventListener("click", (e) => {
+		if (e.target === appsModal) appsModal.hidden = true;
 	});
 
 	$("#btn-stealth").addEventListener("click", () => {
@@ -650,6 +764,15 @@
 	/* ---------------------------------------------------------------
 	 * Init
 	 * ------------------------------------------------------------- */
+	// InvisiProxy rule: libcurl's WASM stack is heavy on mobile — default epoxy
+	if (!localStorage.getItem("vx.settings")) {
+		const ua = navigator;
+		const mobile =
+			ua.userAgentData?.mobile === true ||
+			/Android|iPhone|iPad|iPod|Mobile/i.test(ua.userAgent) ||
+			(ua.platform === "MacIntel" && ua.maxTouchPoints > 1);
+		if (mobile) settings.transport = "epoxy";
+	}
 	applyCloak();
 	renderHistory();
 	if ("serviceWorker" in navigator) {

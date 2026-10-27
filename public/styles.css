@@ -403,3 +403,34 @@ label.row span { display: flex; flex-direction: column; gap: 3px; }
 .oni-icon { color: #b794f6; vertical-align: -1px; margin-right: 2px; }
 .chips.onion .oni-icon { margin-right: 5px; }
 .onion-head .oni-icon { width: 14px; height: 14px; vertical-align: -2px; }
+
+/* ---- apps & games launcher (Incognito-style) ---- */
+.modal-wide { width: min(640px, 100%); }
+.apps-cta { margin-top: 4px; }
+.apps-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+	gap: 10px;
+}
+.app-tile {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	padding: 14px 8px;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: 14px;
+	color: var(--fg);
+	font-size: 0.86rem;
+	cursor: pointer;
+	transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+.app-tile:hover { border-color: var(--acc1); background: var(--bg-soft); transform: translateY(-2px); }
+.app-tile:active { transform: translateY(0); }
+.app-ic {
+	width: 42px; height: 42px;
+	border-radius: 12px;
+	display: grid; place-items: center;
+	font-size: 1.35rem;
+}

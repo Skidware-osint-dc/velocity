@@ -64,6 +64,8 @@
 					<button data-url="http://p53lf57qovyuvwsc6xnrppyply3vtqm7l6pcobkmyqsiofyeznfu5uqd.onion/"><svg class="oni-icon" viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><ellipse cx="8" cy="9.4" rx="5.2" ry="4.8" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.2c2 1.8 2 3.8 0 5.6C6 5 6 3 8 1.2z" fill="currentColor"/><path d="M5.6 7.2c0 3 1 4.8 2.4 5.6M10.4 7.2c0 3-1 4.8-2.4 5.6" fill="none" stroke="currentColor" stroke-width="1.1" opacity="0.8"/></svg> ProPublica</button>
 				</div>
 
+				<button id="btn-apps" class="secondary apps-cta">🕹️ Apps &amp; Games — launch through the proxy</button>
+
 				<div id="history-section" hidden>
 					<div class="section-head">
 						<h2>Recent</h2>
@@ -99,9 +101,22 @@
 					<input id="omnibox" type="text" spellcheck="false" autocapitalize="off" />
 				</form>
 				<button id="btn-popout" class="icon-btn" title="Open in browser tab">↗</button>
+				<span id="tor-indicator-2" class="status status-warn" hidden></span>
 				<button id="open-settings-2" class="icon-btn" title="Settings">⚙</button>
 			</div>
 			<div id="frame-container"></div>
+		</div>
+
+		<!-- ==================== APPS & GAMES ==================== -->
+		<div id="apps" class="modal" hidden>
+			<div class="modal-card modal-wide">
+				<div class="modal-head">
+					<h2>Apps &amp; Games</h2>
+					<button id="close-apps" class="icon-btn" title="Close">✕</button>
+				</div>
+				<p class="fineprint">Every tile launches through the proxy — source IPs and cookies stay inside the tunnel.</p>
+				<div class="apps-grid" id="apps-grid"></div>
+			</div>
 		</div>
 
 		<!-- ==================== SETTINGS ==================== -->
@@ -116,8 +131,13 @@
 					<input type="checkbox" id="set-tor" />
 					<span>
 						Route traffic through Tor 🧅
-						<small>.onion sites work; everything exits via Tor. Forces the libcurl transport.</small>
+						<small id="tor-note">.onion sites work; everything exits via Tor.</small>
 					</span>
+				</label>
+
+				<label>
+					Custom wisp server <small>(ws(s)://…/ endpoint — blank = this server; overrides regions)</small>
+					<input id="set-customwisp" type="text" maxlength="200" placeholder="wss://example.com/wisp/" autocomplete="off" />
 				</label>
 
 				<label>
