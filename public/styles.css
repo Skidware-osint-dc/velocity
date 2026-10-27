@@ -445,3 +445,57 @@ label.row span { display: flex; flex-direction: column; gap: 3px; }
 	color: var(--muted);
 	margin-top: 10px;
 }
+
+/* ── v4 themes (Tinf0il-inspired, mapped to Velocity vars) ── */
+[data-theme="daylight"] {
+	--bg: #f0ede8; --bg-soft: #e8e4de; --card: #ffffff; --card-2: #f4f2ee;
+	--border: #d8d2c8; --text: #1a1a20; --muted: #7a7a8a;
+	--acc1: #4a8a74; --acc2: #2c7a63; --danger: #c4435c;
+}
+[data-theme="acid"] {
+	--bg: #0c120a; --bg-soft: #101607; --card: #141d0f; --card-2: #1a2413;
+	--border: #2c3a1e; --text: #d8f0c0; --muted: #8fa878;
+	--acc1: #a8e34a; --acc2: #7ec82b; --danger: #ff6b6b;
+}
+[data-theme="bubblegum"] {
+	--bg: #160a13; --bg-soft: #1e0f1a; --card: #241420; --card-2: #2c1826;
+	--border: #40243a; --text: #f6dcea; --muted: #b78aa8;
+	--acc1: #ff6ec7; --acc2: #c47aaa; --danger: #ff5c7a;
+}
+
+/* ── favorites stars on app tiles ── */
+.app-tile { position: relative; }
+.app-fav {
+	position: absolute; top: 6px; right: 8px;
+	font-size: 0.95rem; color: var(--muted); line-height: 1;
+}
+.app-tile:hover .app-fav { color: var(--text); }
+.app-fav.on { color: var(--acc1); }
+
+/* ── command palette (Ctrl+K) ── */
+.palette {
+	position: fixed; inset: 0; z-index: 300;
+	background: rgba(4, 6, 12, 0.55);
+	display: flex; justify-content: center; align-items: flex-start;
+	padding-top: 14vh;
+}
+.palette-card {
+	width: min(560px, 92vw);
+	background: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	overflow: hidden;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+.palette-card input {
+	width: 100%; border: none; outline: none;
+	background: transparent; color: var(--text);
+	padding: 14px 16px; font-size: 1rem;
+	border-bottom: 1px solid var(--border);
+}
+.palette-item {
+	display: flex; justify-content: space-between; align-items: center;
+	padding: 10px 16px; font-size: 0.95rem; cursor: pointer; color: var(--text);
+}
+.palette-item.sel, .palette-item:hover { background: var(--card-2); }
+.palette-hint { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }

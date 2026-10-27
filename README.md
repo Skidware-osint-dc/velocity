@@ -62,7 +62,19 @@ Pick the engine in Settings → Proxy engine. The setting applies to **new tabs*
 
 Both engines rendered every tested site. Scramjet is measurably faster on JavaScript-heavy pages (its rewriting is lazy/streamed); Ultraviolet stays as a one-click fallback for anything Scramjet hits a snag on.
 
+## Stealth & UX extras
+
+- **Themes** — midnight (default), daylight, acid, bubblegum (Tinf0il-inspired, CSS variables, live preview in settings)
+- **Command palette** — `Ctrl+K`: switch engines, toggle Tor, panic, stealth window, pop out tab, or launch any app by name (SPLASH-inspired command surface)
+- **Link injection** — open `/#inject=<url>` (SPLASH convention) or `/#go=<url>` and Velocity boots straight into that page; great for shareable instant links
+- **Launcher favorites** — star any app in the grid; it pins into a ⭐ Favorites row and persists
+- **Tab disguise presets** — Google / Docs / Classroom / Schoology / Canvas / custom title
+
+
 ## Tor / onion support 🧅
+
+> **Onion-note on the wisp layer:** the default (direct) region is served by [wispurr](https://github.com/sylvieisnton/wispurr) (Go, fast). Named regions that own a SOCKS upstream — including `tor` — are served by wisp-js with a custom hostname-preserving SOCKS5 dialer (`src/socks-socket.mjs`, `curl --socks5-hostname`-style). That's what makes `.onion` names reach Tor instead of dying in a local DNS lookup.
+
 
 Velocity implements the same approach as Holy Unblocker LTS: browser traffic
 tunnels through the wisp connection, and libcurl attaches to a local Tor
@@ -138,6 +150,8 @@ codec (`xor` stealth / `plain` readable URLs), open mode (framed vs fullscreen
 tab), tab disguise, panic key/target. History lives in `vx.history`.
 
 ## Credits & licenses
+- [Tinf0il](https://github.com/Aluminum-Depot/Tinf0il) — themes, launcher favorites, cloak presets (Schoology/Canvas)
+- [SPLASH](https://github.com/rhenryw/SPLASH) — link-injection (`#inject=`) + command-driven UI ideas
 - [Bolt-Unblocker](https://github.com/Bolt-Network/Bolt-Unblocker) — dual-engine coexistence pattern + apps-grid grouping idea
 - [Ultraviolet](https://github.com/titaniumnetwork-dev/Ultraviolet) by Titanium Network (MIT) — dual-engine fallback engine (vendored bundle)
 

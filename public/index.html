@@ -122,6 +122,14 @@
 		</div>
 
 		<!-- ==================== SETTINGS ==================== -->
+		<!-- Command palette (Ctrl+K) -->
+		<div id="palette" class="palette" hidden>
+			<div class="palette-card">
+				<input id="palette-input" placeholder="Type a command or app name…" autocomplete="off" spellcheck="false" />
+				<div id="palette-list"></div>
+			</div>
+		</div>
+
 		<div id="settings" class="modal" hidden>
 			<div class="modal-card">
 				<div class="modal-head">
@@ -160,6 +168,16 @@
 				</label>
 
 				<label>
+					Theme <small>(Tinf0il-style color schemes)</small>
+					<select id="set-theme">
+						<option value="midnight">🌃 Midnight — default dark</option>
+						<option value="daylight">☀️ Daylight — light mode</option>
+						<option value="acid">🧪 Acid — terminal green</option>
+						<option value="bubblegum">🍬 Bubblegum — pink dark</option>
+					</select>
+				</label>
+
+				<label>
 					Search engine
 					<select id="set-engine">
 						<option value="https://duckduckgo.com/?q=%s">DuckDuckGo</option>
@@ -192,6 +210,8 @@
 						<option value="google">Google</option>
 						<option value="classroom">Google Classroom</option>
 						<option value="docs">Google Docs</option>
+						<option value="schoology">Schoology</option>
+						<option value="canvas">Canvas Student</option>
 						<option value="custom">Custom title…</option>
 					</select>
 				</label>

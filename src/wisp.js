@@ -60,7 +60,22 @@ const baseOptions = () => ({
 	reputation: { enabled: false },
 });
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Region with a SOCKS upstream (tor, …) does NOT get a wispurr worker:
+// wispurr (Go) resolves DNS locally and dials by IP, which Tor can't use for
+// .onion names. Instead named regions run in-process through wisp-js with our
+// SocksTCPSocket (src/socks-socket.mjs), which hands the hostname to the
+// SOCKS upstream the way curl --socks5-hostname does.
+export async function startWispRegionPool() {
+	const pool = { default: null, regions: new Map() };
+	const def = new RegionWisp("", "");
+	await def.start();
+	pool.default = def;
+	for (const [name, proxy] of Object.entries(regionProxies())) {
+		pool.regions.set(name, { proxy }); // routed via wisp-js + SocksTCPSocket
+		console.log(`[wisp:${name}] region → wisp-js via ${proxy} (hostname-preserving)`);
+	}
+	return pool;
+}
 
 export class RegionWisp {
 	constructor(name, proxy = "") {
@@ -119,24 +134,4 @@ export class RegionWisp {
 	}
 }
 
-// Spawn the default worker + one worker per configured region.
-// Returns { default: RegionWisp, regions: Map<name, RegionWisp> } or null on
-// total failure (caller then falls back to wisp-js).
-export async function startWispRegionPool() {
-	const proxies = regionProxies();
-	const defaultWisp = new RegionWisp("default");
-	const regions = new Map();
-	try {
-		await defaultWisp.start();
-	} catch {
-		return null;
-	}
-	for (const [region, proxy] of Object.entries(proxies)) {
-		// the tor worker spawns even if the Tor daemon is momentarily down —
-		// SOCKS connections are established lazily per stream
-		const rw = new RegionWisp(region, proxy);
-		regions.set(region, rw);
-		rw.start().catch(() => {});
-	}
-	return { default: defaultWisp, regions };
-}
+

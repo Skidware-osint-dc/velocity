@@ -22,7 +22,8 @@ import { scramjetPath } from "@mercuryworkshop/scramjet/path";
 import { baremuxPath } from "@mercuryworkshop/bare-mux/node";
 import { createBareServer } from "@tomphttp/bare-server-node";
 import { server as wisp, logging } from "@mercuryworkshop/wisp-js/server";
-import { startWispRegionPool } from "./wisp.js";
+import { startWispRegionPool, regionProxies } from "./wisp.js";
+import { socksTCPSocketClass } from "./socks-socket.mjs";
 
 const TOR_SOCKS = process.env.TOR_SOCKS || "127.0.0.1:9050";
 const SITE_PASSWORD = process.env.SITE_PASSWORD || "";
@@ -130,8 +131,8 @@ app.get("/suggest", async (req, res) => {
 app.get("/api/capabilities", (req, res) => {
 	res.json({
 		wispEngine: wispPool ? "wispurr" : "wisp-js",
-		regions: wispPool ? ["", ...wispPool.regions.keys()] : [""],
-		torMode: wispPool?.regions.has("tor") ? "server" : "client",
+		regions: ["", ...KNOWN_REGIONS],
+		torMode: KNOWN_REGIONS.has("tor") ? "server" : "client",
 		customWispAllowed: true,
 		siteLocked: !!SITE_PASSWORD,
 	});
@@ -194,14 +195,22 @@ try {
 }
 
 const WISP_BASE = "/wisp/";
+// region names are known even if wispurr failed to spawn (wisp-js routes them)
+const KNOWN_REGIONS = new Set(Object.keys(regionProxies()));
 const wispRegionOf = (url) => {
 	const p = String(url || "").split(/[?#]/)[0];
 	if (p === WISP_BASE) return "";
 	if (p.startsWith(WISP_BASE) && p.endsWith("/")) {
 		const r = p.slice(WISP_BASE.length, -1);
-		if (wispPool?.regions.has(r)) return r;
+		if (KNOWN_REGIONS.has(r) || wispPool?.regions.has(r)) return r;
 	}
 	return null;
+};
+// cache one socket class per upstream url
+const sockClassCache = new Map();
+const sockClassFor = (proxy) => {
+	if (!sockClassCache.has(proxy)) sockClassCache.set(proxy, socksTCPSocketClass(proxy));
+	return sockClassCache.get(proxy);
 };
 
 // reject upgrades that don't originate from our own site — closes the classic
@@ -226,14 +235,20 @@ server.on("upgrade", (req, socket, head) => {
 		if (bare.shouldRoute(req)) return bare.routeUpgrade(req, socket, head);
 		if (!fromOwnSite(req)) return socket.destroy();
 		const region = wispRegionOf(req.url);
-		if (region !== null && wispPool) {
-			req.url = WISP_BASE; // strip region suffix; worker owns the proxy choice
-			const target = region ? wispPool.regions.get(region) : wispPool.default;
-			if (target?.ready) return target.route(req, socket, head);
-			return socket.destroy();
+		if (region !== null) {
+			req.url = WISP_BASE; // strip region suffix
+			if (!region) {
+				if (process.env.WISP_LOG) console.log(`[wisp] default upgrade (pool=${!!wispPool?.default?.ready})`);
+				// default egress: wispurr worker when alive, wisp-js direct fallback
+				if (wispPool?.default?.ready) return wispPool.default.route(req, socket, head);
+				return wisp.routeRequest(req, socket, head);
+			}
+			// named region → wisp-js + hostname-preserving SOCKS socket (.onion works here)
+			const proxy = wispPool?.regions.get(region)?.proxy ?? regionProxies()[region];
+			if (!proxy) return socket.destroy();
+			if (process.env.WISP_LOG) console.log(`[wisp] region upgrade "${region}" → socks ${proxy}`);
+			return wisp.routeRequest(req, socket, head, { TCPSocket: sockClassFor(proxy) });
 		}
-		// legacy fallback: wisp-js, no region support (Tor via client-side proxy)
-		if (!wispPool && req.url?.endsWith("/wisp/")) return wisp.routeRequest(req, socket, head);
 		socket.end();
 	} catch {
 		socket.destroy();
@@ -253,7 +268,7 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
     console.log(`${sig} received, shutting down`);
     if (wispPool) {
       wispPool.default.stop();
-      for (const r of wispPool.regions.values()) r.stop();
+      wispPool.default?.stop?.(); // named regions are in-process (wisp-js+SOCKS), nothing to stop
     }
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 300);

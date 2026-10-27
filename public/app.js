@@ -15,6 +15,7 @@
 	const DEFAULTS = {
 		transport: "libcurl",
 		proxyEngine: "scramjet",
+		theme: "midnight",
 		engine: "https://duckduckgo.com/?q=%s",
 		codec: "xor",
 		cloak: "none",
@@ -546,6 +547,8 @@
 		google: { title: "Google" },
 		classroom: { title: "Google Classroom" },
 		docs: { title: "Google Docs" },
+		schoology: { title: "Schoology" },
+		canvas: { title: "Canvas Student" },
 	};
 	function applyCloak() {
 		// cloak ("tab disguise") always wins; otherwise show the active tab while browsing
@@ -588,10 +591,21 @@
 					: ".onion sites work; everything exits via Tor. Forces the libcurl transport."
 				: ".onion sites work; everything exits via Tor.";
 	}
+	// Tinf0il-style themes — CSS-var driven, applied from <html data-theme>
+	const applyTheme = () => {
+		document.documentElement.dataset.theme = settings.theme || "midnight";
+	};
+	applyTheme();
+	$("#set-theme").addEventListener("change", (e) => {
+		// live preview while the settings modal is open
+		document.documentElement.dataset.theme = e.target.value;
+	});
+
 	function openSettings() {
 		$("#set-tor").checked = settings.tor;
 		$("#set-transport").value = settings.transport;
 		$("#set-proxyengine").value = settings.proxyEngine;
+		$("#set-theme").value = settings.theme;
 		$("#set-engine").value = settings.engine;
 		$("#set-codec").value = settings.codec;
 		$("#set-openmode").value = settings.openMode;
@@ -616,6 +630,8 @@
 		settings.tor = $("#set-tor").checked;
 		settings.transport = $("#set-transport").value || "libcurl";
 		settings.proxyEngine = $("#set-proxyengine").value === "uv" ? "uv" : "scramjet";
+		settings.theme = $("#set-theme").value || "midnight";
+		applyTheme();
 		let conflictNote = "";
 		// Ultraviolet runs over bare directly (no wisp) — no SOCKS/Tor path there.
 		if (settings.proxyEngine === "uv" && settings.tor) {
@@ -709,29 +725,55 @@
 		{ k: "tools", n: "Wikipedia", u: "https://www.wikipedia.org", i: "📚", c: "#b8b8b8" },
 	];
 	const appsModal = $("#apps");
-	{
+	// Favorites (Tinf0il-style pinning) — persisted in localStorage
+	const favStore = "vx.favorites";
+	let favorites = new Set();
+	try { favorites = new Set(JSON.parse(localStorage.getItem(favStore) || "[]")); } catch {}
+	function toggleFav(name) {
+		favorites.has(name) ? favorites.delete(name) : favorites.add(name);
+		localStorage.setItem(favStore, JSON.stringify([...favorites]));
+		renderApps();
+	}
+	function renderApps() {
 		const grid = $("#apps-grid");
-		const GROUPS = { games: "🕹 Games & Cloud Gaming", social: "💬 Social & Media", tools: "🧰 Tools" };
+		grid.innerHTML = "";
+		const GROUPS = {
+			fav: "⭐ Favorites",
+			games: "🕹 Games & Cloud Gaming",
+			social: "💬 Social & Media",
+			tools: "🧰 Tools",
+		};
+		const makeTile = (a) => {
+			const b = document.createElement("button");
+			b.className = "app-tile";
+			b.innerHTML = `<span class="app-ic" style="background:${a.c}22;color:${a.c}">${a.i}</span><span>${a.n}</span>`;
+			b.title = a.u;
+			b.addEventListener("click", () => {
+				appsModal.hidden = true;
+				go(a.u);
+			});
+			const star = document.createElement("span");
+			star.className = "app-fav" + (favorites.has(a.n) ? " on" : "");
+			star.textContent = favorites.has(a.n) ? "★" : "☆";
+			star.title = "Pin to favorites";
+			star.addEventListener("click", (e) => {
+				e.stopPropagation();
+				toggleFav(a.n);
+			});
+			b.appendChild(star);
+			return b;
+		};
 		for (const [key, label] of Object.entries(GROUPS)) {
-			const items = APPS.filter((a) => a.k === key);
+			const items = key === "fav" ? APPS.filter((a) => favorites.has(a.n)) : APPS.filter((a) => a.k === key);
 			if (!items.length) continue;
 			const h = document.createElement("div");
 			h.className = "apps-group";
 			h.textContent = label;
 			grid.appendChild(h);
-			for (const a of items) {
-				const b = document.createElement("button");
-				b.className = "app-tile";
-				b.innerHTML = `<span class="app-ic" style="background:${a.c}22;color:${a.c}">${a.i}</span><span>${a.n}</span>`;
-				b.title = a.u;
-				b.addEventListener("click", () => {
-					appsModal.hidden = true;
-					go(a.u);
-				});
-				grid.appendChild(b);
-			}
+			for (const a of items) grid.appendChild(makeTile(a));
 		}
 	}
+	renderApps();
 	$("#btn-apps").addEventListener("click", () => (appsModal.hidden = false));
 	$("#close-apps").addEventListener("click", () => (appsModal.hidden = true));
 	appsModal.addEventListener("click", (e) => {
@@ -863,4 +905,115 @@
 		setStatus("bad", "unsupported");
 		err("This browser doesn't support service workers.");
 	}
+
+	// SPLASH-style link injection: /#inject=<url> or /#go=<url> auto-launches the target
+	(async () => {
+		const m = location.hash.match(/^#(?:inject|go)=(.+)$/);
+		if (!m || !m[1]) return;
+		history.replaceState(null, "", location.pathname);
+		try {
+			await boot();
+			go(decodeURIComponent(m[1]));
+		} catch {
+			toast("Bad inject link");
+		}
+	})();
+
+	/* ----------------------------------------------------------------
+	 * Command palette (Ctrl+K) — SPLASH-inspired command surface
+	 * -------------------------------------------------------------- */
+	const palette = $("#palette");
+	const paletteInput = $("#palette-input");
+	const paletteList = $("#palette-list");
+	const COMMANDS = [
+		{ t: "➕ New tab", hint: "Ctrl+T", run: () => $("#btn-newtab").click() },
+		{ t: "🧰 Open apps library", run: () => (appsModal.hidden = false) },
+		{ t: "⚙ Open settings", run: () => openSettings() },
+		{
+			t: "🧅 Toggle Tor (onion mode)",
+			run: () => {
+				openSettings();
+				$("#set-tor").checked = !settings.tor;
+				$("#save-settings").click();
+			},
+		},
+		{
+			t: "🔄 Switch proxy engine (Scramjet ↔ Ultraviolet)",
+			run: () => {
+				openSettings();
+				$("#set-proxyengine").value = settings.proxyEngine === "uv" ? "scramjet" : "uv";
+				$("#save-settings").click();
+			},
+		},
+		{ t: "😱 Panic now (hide everything)", run: () => panic() },
+		{ t: "🕶 Stealth window (about:blank)", run: () => $("#btn-stealth").click() },
+		{
+			t: "🔀 Pop out active tab",
+			run: () => {
+				const tab = currentTab();
+				if (tab && tab.url) window.open(proxied(tab.url), "_blank");
+				else toast("Nothing loaded in this tab yet");
+			},
+		},
+	];
+	let palIndex = 0;
+	let palItems = [];
+	function paletteSources() {
+		return [
+			...COMMANDS,
+			...APPS.map((a) => ({
+				t: `${a.i} ${a.n}`,
+				hint: a.k,
+				run: () => go(a.u),
+			})),
+		];
+	}
+	function renderPalette() {
+		const q = paletteInput.value.trim().toLowerCase();
+		palItems = q ? paletteSources().filter((c) => c.t.toLowerCase().includes(q)) : paletteSources();
+		palIndex = Math.min(palIndex, Math.max(0, palItems.length - 1));
+		paletteList.innerHTML = "";
+		palItems.slice(0, 12).forEach((c, i) => {
+			const d = document.createElement("div");
+			d.className = "palette-item" + (i === palIndex ? " sel" : "");
+			d.innerHTML = `<span>${c.t}</span>` + (c.hint ? `<span class="palette-hint">${c.hint}</span>` : "");
+			d.addEventListener("click", () => {
+				palette.hidden = true;
+				c.run();
+			});
+			paletteList.appendChild(d);
+		});
+	}
+	function togglePalette() {
+		if (palette.hidden) {
+			palette.hidden = false;
+			paletteInput.value = "";
+			palIndex = 0;
+			renderPalette();
+			setTimeout(() => paletteInput.focus(), 30);
+		} else {
+			palette.hidden = true;
+		}
+	}
+	paletteInput.addEventListener("input", () => {
+		palIndex = 0;
+		renderPalette();
+	});
+	paletteInput.addEventListener("keydown", (e) => {
+		if (e.key === "ArrowDown") { e.preventDefault(); palIndex = Math.min(palIndex + 1, palItems.length - 1); renderPalette(); }
+		else if (e.key === "ArrowUp") { e.preventDefault(); palIndex = Math.max(palIndex - 1, 0); renderPalette(); }
+		else if (e.key === "Enter") { e.preventDefault(); const c = palItems[palIndex]; if (c) { palette.hidden = true; c.run(); } }
+		else if (e.key === "Escape") palette.hidden = true;
+	});
+	palette.addEventListener("click", (e) => {
+		if (e.target === palette) palette.hidden = true;
+	});
+	window.addEventListener("keydown", (e) => {
+		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+			e.preventDefault();
+			togglePalette();
+		} else if (e.key === "Escape" && !palette.hidden) {
+			palette.hidden = true;
+		}
+	});
 })();
