@@ -434,3 +434,14 @@ label.row span { display: flex; flex-direction: column; gap: 3px; }
 	display: grid; place-items: center;
 	font-size: 1.35rem;
 }
+
+/* apps grid group headers */
+.apps-group {
+	grid-column: 1 / -1;
+	font-size: 0.78rem;
+	font-weight: 600;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--muted);
+	margin-top: 10px;
+}

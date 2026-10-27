@@ -14,6 +14,7 @@
 	 * ------------------------------------------------------------- */
 	const DEFAULTS = {
 		transport: "libcurl",
+		proxyEngine: "scramjet",
 		engine: "https://duckduckgo.com/?q=%s",
 		codec: "xor",
 		cloak: "none",
@@ -222,7 +223,38 @@
 		}
 	};
 
-	const proxied = (realUrl) => scramjet.encodeUrl(realUrl);
+	// dual engines (Bolt pattern): /scramjet/ = Scramjet, /uv/ = Ultraviolet
+	const proxied = (realUrl) =>
+		settings.proxyEngine === "uv"
+			? self.__uv$config.prefix + self.__uv$config.encodeUrl(realUrl)
+			: scramjet.encodeUrl(realUrl);
+	const uvDecode = (path) => {
+		try {
+			const p = self.__uv$config.prefix;
+			if (!path.startsWith(p)) return null;
+			return self.__uv$config.decodeUrl(path.slice(p.length));
+		} catch {
+			return null;
+		}
+	};
+
+	/* Minimal iframe controller for Ultraviolet tabs (UV has no urlchange
+	 * event, no back/forward helpers — navigation is tracked by poller). */
+	class UVFrame {
+		constructor() {
+			this.frame = document.createElement("iframe");
+			this.listeners = {};
+		}
+		go(url) {
+			this.frame.src = self.__uv$config.prefix + self.__uv$config.encodeUrl(url);
+		}
+		back() { try { this.frame.contentWindow.history.back(); } catch {} }
+		forward() { try { this.frame.contentWindow.history.forward(); } catch {} }
+		reload() { try { this.frame.contentWindow.location.reload(); } catch {} }
+		addEventListener(type, fn) {
+			(this.listeners[type] ??= []).push(fn);
+		}
+	}
 
 	/* ---------------------------------------------------------------
 	 * Tabs (Holy-style multi-tab browsing)
@@ -265,7 +297,8 @@
 
 	function createTab(target) {
 		const id = ++tabSeq;
-		const frame = scramjet.createFrame();
+		const engine = settings.proxyEngine === "uv" ? "uv" : "scramjet";
+		const frame = engine === "uv" ? new UVFrame() : scramjet.createFrame();
 		frame.frame.className = "vx-frame";
 		frame.frame.setAttribute(
 			"allow",
@@ -273,26 +306,48 @@
 		);
 		frame.frame.style.display = "none";
 		frameContainer.appendChild(frame.frame);
-		const tab = { id, frame, el: null, url: "", onion: false };
+		const tab = { id, frame, el: null, url: "", onion: false, engine };
 		tabs.set(id, tab);
-		frame.addEventListener("urlchange", (e) => {
-			try {
-				const real = new URL(e.url).href;
-				tab.url = real;
-				tab.onion = isOnion(real);
-				if (tab.id === activeTab) {
-					omnibox.value = real;
-					tab.title = new URL(real).hostname;
-					applyCloak(); // respects the disguise setting while browsing
-				}
-				recordHistory(real);
-				renderTabs();
-				attachPanic(tab);
-			} catch {}
-		});
+		if (engine !== "uv") {
+			frame.addEventListener("urlchange", (e) => {
+				try {
+					const real = new URL(e.url).href;
+					tab.url = real;
+					tab.onion = isOnion(real);
+					if (tab.id === activeTab) {
+						omnibox.value = real;
+						tab.title = new URL(real).hostname;
+						applyCloak(); // respects the disguise setting while browsing
+					}
+					recordHistory(real);
+					renderTabs();
+					attachPanic(tab);
+				} catch {}
+			});
+		}
 		if (target) frame.go(target);
 		return tab;
 	}
+
+	// UV has no urlchange event — track the active UV tab's location by polling
+	// (same-origin iframe, so contentWindow.location is readable).
+	setInterval(() => {
+		const tab = currentTab();
+		if (!tab || tab.engine !== "uv") return;
+		try {
+			const loc = tab.frame.frame.contentWindow.location;
+			const real = uvDecode(loc.pathname);
+			if (!real || real === tab.url) return;
+			tab.url = real;
+			tab.onion = isOnion(real);
+			omnibox.value = real;
+			tab.title = new URL(real).hostname;
+			applyCloak();
+			recordHistory(real);
+			renderTabs();
+			attachPanic(tab);
+		} catch {}
+	}, 600);
 
 	function activateTab(id) {
 		activeTab = id;
@@ -536,6 +591,7 @@
 	function openSettings() {
 		$("#set-tor").checked = settings.tor;
 		$("#set-transport").value = settings.transport;
+		$("#set-proxyengine").value = settings.proxyEngine;
 		$("#set-engine").value = settings.engine;
 		$("#set-codec").value = settings.codec;
 		$("#set-openmode").value = settings.openMode;
@@ -559,6 +615,14 @@
 		const prevCodec = settings.codec;
 		settings.tor = $("#set-tor").checked;
 		settings.transport = $("#set-transport").value || "libcurl";
+		settings.proxyEngine = $("#set-proxyengine").value === "uv" ? "uv" : "scramjet";
+		let conflictNote = "";
+		// Ultraviolet runs over bare directly (no wisp) — no SOCKS/Tor path there.
+		if (settings.proxyEngine === "uv" && settings.tor) {
+			settings.tor = false;
+			$("#set-tor").checked = false;
+			conflictNote = "Tor needs the Scramjet engine — Tor turned off while Ultraviolet is active. ";
+		}
 		settings.engine = $("#set-engine").value;
 		settings.codec = $("#set-codec").value;
 		settings.openMode = $("#set-openmode").value;
@@ -600,7 +664,7 @@
 				location.reload();
 				return;
 			}
-			toast("Settings saved");
+			toast(conflictNote + "Settings saved");
 		} catch (e) {
 			toast("Saved, but transport change failed: " + e.message);
 		}
@@ -618,45 +682,54 @@
 	 * ------------------------------------------------------------- */
 	const APPS = [
 		// cloud & web gaming
-		{ n: "GeForce NOW", u: "https://play.geforcenow.com", i: "⚡", c: "#76b900" },
-		{ n: "Xbox Cloud", u: "https://www.xbox.com/play", i: "🎮", c: "#107c10" },
-		{ n: "now.gg", u: "https://now.gg", i: "📱", c: "#8e5cf7" },
-		{ n: "Poki", u: "https://poki.com", i: "🕹️", c: "#ff4d6d" },
-		{ n: "CrazyGames", u: "https://www.crazygames.com", i: "🃏", c: "#7c4dff" },
-		{ n: "itch.io", u: "https://itch.io/games/html5", i: "🎲", c: "#fa5c5c" },
-		{ n: "Neal.fun", u: "https://neal.fun", i: "🌀", c: "#00b8d4" },
-		{ n: "Hacker Typer", u: "https://hackertyper.net", i: "⌨️", c: "#00c853" },
+		{ k: "games", n: "GeForce NOW", u: "https://play.geforcenow.com", i: "⚡", c: "#76b900" },
+		{ k: "games", n: "Xbox Cloud", u: "https://www.xbox.com/play", i: "🎮", c: "#107c10" },
+		{ k: "games", n: "now.gg", u: "https://now.gg", i: "📱", c: "#8e5cf7" },
+		{ k: "games", n: "Poki", u: "https://poki.com", i: "🕹️", c: "#ff4d6d" },
+		{ k: "games", n: "CrazyGames", u: "https://www.crazygames.com", i: "🃏", c: "#7c4dff" },
+		{ k: "games", n: "itch.io", u: "https://itch.io/games/html5", i: "🎲", c: "#fa5c5c" },
+		{ k: "games", n: "Neal.fun", u: "https://neal.fun", i: "🌀", c: "#00b8d4" },
+		{ k: "games", n: "Hacker Typer", u: "https://hackertyper.net", i: "⌨️", c: "#00c853" },
 		// social & apps
-		{ n: "Discord", u: "https://discord.com/app", i: "💬", c: "#5865f2" },
-		{ n: "Spotify", u: "https://open.spotify.com", i: "🎧", c: "#1db954" },
-		{ n: "TikTok", u: "https://www.tiktok.com", i: "🎵", c: "#ff2d55" },
-		{ n: "YouTube", u: "https://www.youtube.com", i: "▶️", c: "#ff0033" },
-		{ n: "Twitch", u: "https://www.twitch.tv", i: "📺", c: "#9146ff" },
-		{ n: "Reddit", u: "https://www.reddit.com", i: "🗞️", c: "#ff4500" },
-		{ n: "Instagram", u: "https://www.instagram.com", i: "📸", c: "#e1306c" },
-		{ n: "X / Twitter", u: "https://x.com", i: "🐦", c: "#1d9bf0" },
-		{ n: "Pinterest", u: "https://www.pinterest.com", i: "📌", c: "#e60023" },
+		{ k: "social", n: "Discord", u: "https://discord.com/app", i: "💬", c: "#5865f2" },
+		{ k: "social", n: "Spotify", u: "https://open.spotify.com", i: "🎧", c: "#1db954" },
+		{ k: "social", n: "TikTok", u: "https://www.tiktok.com", i: "🎵", c: "#ff2d55" },
+		{ k: "social", n: "YouTube", u: "https://www.youtube.com", i: "▶️", c: "#ff0033" },
+		{ k: "social", n: "Twitch", u: "https://www.twitch.tv", i: "📺", c: "#9146ff" },
+		{ k: "social", n: "Reddit", u: "https://www.reddit.com", i: "🗞️", c: "#ff4500" },
+		{ k: "social", n: "Instagram", u: "https://www.instagram.com", i: "📸", c: "#e1306c" },
+		{ k: "social", n: "X / Twitter", u: "https://x.com", i: "🐦", c: "#1d9bf0" },
+		{ k: "social", n: "Pinterest", u: "https://www.pinterest.com", i: "📌", c: "#e60023" },
 		// tools
-		{ n: "Google Docs", u: "https://docs.google.com", i: "📄", c: "#4285f4" },
-		{ n: "Maps", u: "https://www.google.com/maps", i: "🗺️", c: "#34a853" },
-		{ n: "Wayback", u: "https://web.archive.org", i: "🕰️", c: "#8a8a8a" },
-		{ n: "Translate", u: "https://translate.google.com", i: "🌐", c: "#4285f4" },
-		{ n: "Duolingo", u: "https://www.duolingo.com", i: "🦉", c: "#58cc02" },
-		{ n: "Wikipedia", u: "https://www.wikipedia.org", i: "📚", c: "#b8b8b8" },
+		{ k: "tools", n: "Google Docs", u: "https://docs.google.com", i: "📄", c: "#4285f4" },
+		{ k: "tools", n: "Maps", u: "https://www.google.com/maps", i: "🗺️", c: "#34a853" },
+		{ k: "tools", n: "Wayback", u: "https://web.archive.org", i: "🕰️", c: "#8a8a8a" },
+		{ k: "tools", n: "Translate", u: "https://translate.google.com", i: "🌐", c: "#4285f4" },
+		{ k: "tools", n: "Duolingo", u: "https://www.duolingo.com", i: "🦉", c: "#58cc02" },
+		{ k: "tools", n: "Wikipedia", u: "https://www.wikipedia.org", i: "📚", c: "#b8b8b8" },
 	];
 	const appsModal = $("#apps");
 	{
 		const grid = $("#apps-grid");
-		for (const a of APPS) {
-			const b = document.createElement("button");
-			b.className = "app-tile";
-			b.innerHTML = `<span class="app-ic" style="background:${a.c}22;color:${a.c}">${a.i}</span><span>${a.n}</span>`;
-			b.title = a.u;
-			b.addEventListener("click", () => {
-				appsModal.hidden = true;
-				go(a.u);
-			});
-			grid.appendChild(b);
+		const GROUPS = { games: "🕹 Games & Cloud Gaming", social: "💬 Social & Media", tools: "🧰 Tools" };
+		for (const [key, label] of Object.entries(GROUPS)) {
+			const items = APPS.filter((a) => a.k === key);
+			if (!items.length) continue;
+			const h = document.createElement("div");
+			h.className = "apps-group";
+			h.textContent = label;
+			grid.appendChild(h);
+			for (const a of items) {
+				const b = document.createElement("button");
+				b.className = "app-tile";
+				b.innerHTML = `<span class="app-ic" style="background:${a.c}22;color:${a.c}">${a.i}</span><span>${a.n}</span>`;
+				b.title = a.u;
+				b.addEventListener("click", () => {
+					appsModal.hidden = true;
+					go(a.u);
+				});
+				grid.appendChild(b);
+			}
 		}
 	}
 	$("#btn-apps").addEventListener("click", () => (appsModal.hidden = false));

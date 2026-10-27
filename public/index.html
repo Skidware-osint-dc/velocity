@@ -9,6 +9,8 @@
 		<link rel="stylesheet" href="styles.css" />
 		<script src="/scram/scramjet.all.js" defer></script>
 		<script src="/baremux/index.js" defer></script>
+		<script src="/uvfiles/uv.bundle.js" defer></script>
+		<script src="/uvfiles/uv.config.js" defer></script>
 		<script src="app.js" defer></script>
 	</head>
 	<body>
@@ -146,6 +148,14 @@
 						<option value="libcurl">libcurl ≥ wisp — fastest, best fingerprints</option>
 						<option value="epoxy">epoxy ≥ wisp — light and fast</option>
 						<option value="bare">bare v3 — maximum compatibility</option>
+					</select>
+				</label>
+
+				<label>
+					Proxy engine <small>(Scramjet = fast + Tor; Ultraviolet = compatibility fallback, direct only)</small>
+					<select id="set-proxyengine">
+						<option value="scramjet">Scramjet — default, Tor/onion capable</option>
+						<option value="uv">Ultraviolet — max compatibility, no Tor</option>
 					</select>
 				</label>
 

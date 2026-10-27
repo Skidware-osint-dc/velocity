@@ -38,6 +38,30 @@ workers can't start.
 | `/api/tor/status` | `{running, socks}` — probes the Tor SOCKS port |
 | `/healthz` | health + version info (+ `wisp`, `tor` fields) |
 
+## Proxy engines
+
+Velocity is **dual-engine** (the coexistence pattern used by Bolt-Unblocker): one service worker hosts both engines and routes by prefix.
+
+| Engine          | Prefix       | Transport                                   | Best for                             |
+| --------------- | ------------ | ------------------------------------------- | ------------------------------------ |
+| **Scramjet**    | `/scramjet/` | wisp (epoxy / libcurl), Tor-capable         | default — fast, region/Tor routing   |
+| **Ultraviolet** | `/uv/`       | bare server direct (no wisp → **no Tor**)   | compatibility fallback               |
+
+Pick the engine in Settings → Proxy engine. The setting applies to **new tabs** — existing tabs keep the engine they were created with. Turning Tor on forces Scramjet (Ultraviolet has no SOCKS path since it talks to the bare server directly).
+
+### Head-to-head (load-to-rendered, local server)
+
+| Site          | Scramjet | Ultraviolet |
+| ------------- | -------- | ----------- |
+| example.com   | 0.74 s   | 0.75 s      |
+| YouTube       | 1.9 s    | 8.2 s       |
+| Discord login | 1.0 s    | 1.8 s       |
+| TikTok        | 1.0 s    | 1.5 s       |
+| GeForce NOW   | 2.3 s    | 1.2 s       |
+| now.gg        | 1.1 s    | 1.2 s       |
+
+Both engines rendered every tested site. Scramjet is measurably faster on JavaScript-heavy pages (its rewriting is lazy/streamed); Ultraviolet stays as a one-click fallback for anything Scramjet hits a snag on.
+
 ## Tor / onion support 🧅
 
 Velocity implements the same approach as Holy Unblocker LTS: browser traffic
@@ -114,6 +138,8 @@ codec (`xor` stealth / `plain` readable URLs), open mode (framed vs fullscreen
 tab), tab disguise, panic key/target. History lives in `vx.history`.
 
 ## Credits & licenses
+- [Bolt-Unblocker](https://github.com/Bolt-Network/Bolt-Unblocker) — dual-engine coexistence pattern + apps-grid grouping idea
+- [Ultraviolet](https://github.com/titaniumnetwork-dev/Ultraviolet) by Titanium Network (MIT) — dual-engine fallback engine (vendored bundle)
 
 - [Scramjet](https://github.com/MercuryWorkshop/scramjet) — Mercury Workshop (MIT / AGPL bundled components)
 - [Ultraviolet](https://github.com/titaniumnetwork-dev/ultraviolet) — Titanium Network (design lineage)
