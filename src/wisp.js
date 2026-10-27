@@ -74,14 +74,24 @@ export async function startWispRegionPool() {
 		pool.regions.set(name, { proxy }); // routed via wisp-js + SocksTCPSocket
 		console.log(`[wisp:${name}] region → wisp-js via ${proxy} (hostname-preserving)`);
 	}
+	// "turbo" region: direct egress (no proxy) but 32x wisp flow-control
+	// windows + 4x socket buffers — the high-throughput route for Velocity Turbo.
+	const turbo = new RegionWisp("turbo", "", {
+		bufferRemainingLength: 1024 * 1024, // 32x stock 32KB
+		tcpBufferSize: 4 * 1024 * 1024,
+		socketBufferSize: 64 * 1024 * 1024,
+	});
+	turbo.start().catch(() => {});
+	pool.regions.set("turbo", turbo); // RegionWisp instance → routes via wispurr
+	console.log("[wisp:turbo] region → wispurr with 1MB stream windows");
 	return pool;
 }
 
 export class RegionWisp {
-	constructor(name, proxy = "") {
+	constructor(name, proxy = "", overrides = {}) {
 		this.name = name;
 		this.proxy = proxy;
-		this.opts = { ...baseOptions(), proxy };
+		this.opts = { ...baseOptions(), proxy, ...overrides };
 		this.wisp = null;
 		this.live = false;
 		this.stopped = false;

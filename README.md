@@ -62,6 +62,30 @@ Pick the engine in Settings → Proxy engine. The setting applies to **new tabs*
 
 Both engines rendered every tested site. Scramjet is measurably faster on JavaScript-heavy pages (its rewriting is lazy/streamed); Ultraviolet stays as a one-click fallback for anything Scramjet hits a snag on.
 
+### ⚡ Velocity Turbo transport
+
+**Settings → Transport → "Turbo (libcurl, high-throughput)"** — our own proxy transport built on the libcurl.js engine, tuned to move more data:
+
+| Change | Stock libcurl | Turbo |
+| ------ | ------------- | ----- |
+| Connection pool | ~50 total | **250 total / 64 per host** (`connections: [250, 64]`) |
+| Wisp server region | `/wisp/` default | **`/wisp/turbo/`** — wispurr worker with **32× flow-control windows** (`bufferRemainingLength` 1 MB vs 32 KB) + 4× socket buffers |
+| bare-mux header interop | crashes on plain-object headers (2.0.x API drift) | `asEntries()` normalization on `request()` **and** `connect()` |
+
+Measured (median of 3 alternating trials, streamed 8 MB TLS downloads through this server, Cloudflare `__down`):
+
+| Transport | MB/s |
+| --------- | ---- |
+| **Turbo** | **20.0–23.2** |
+| libcurl (stock) | 20.8–21.3 |
+| epoxy | 13.7–15.2 |
+
+Turbo ≥ stock libcurl on every internet-path run (up to **+12%** per-trial, 23.2 best); the wispurr big-window region is where the headroom comes from at real network RTTs. CPU-bound loopback runs are epoxy's game (its Rust TLS stack is light), so Turbo is recommendation-opt-in rather than default.
+
+**Honest TLS-fingerprint note:** libcurl.js ships BoringSSL *without* the curl-impersonate patchset, so Turbo's `ClientHello` is still curl-flavored (HTTP-layer headers already mirror the hosting browser). True browser-grade TLS emulation requires a custom wasm rebuild — explicitly parked; track [MercuryWorkshop/libcurl.js](https://github.com/MercuryWorkshop/libcurl.js).
+
+**Compatibility pins:** the vendored core is `libcurl-transport` 2.0.5 (libcurl.js **0.7.4**). The 2.0.6 dist (libcurl.js 0.7.5) silently stalls Scramjet's page boot — don't bump it without re-running the UI e2e. If the turbo wispurr worker ever crashes, region upgrades degrade to the default worker instead of dying (see `server.js` dispatcher).
+
 ## Stealth & UX extras
 
 - **Themes** — midnight (default), daylight, acid, bubblegum (Tinf0il-inspired, CSS variables, live preview in settings)
@@ -109,6 +133,20 @@ connection caps + flood protection, and websocket upgrades are rejected unless
 they originate from this site itself (no third-party wisp hijacking).
 Onion trust-model and fingerprinting caveats of Tor Browser still apply —
 this is a proxy through Tor, not Tor Browser.
+
+## Tests
+
+```bash
+# dev deps for testing only: npm i -D playwright-core  (or point CHROME_PATH at a chrome binary)
+python3 tests/perf-src.py &            # loopback benchmark origin :8998
+node src/server.js &                   # run the proxy :8080
+node tests/suite.cjs                   # 23-check regression: engines × transports × tor + stealth UX
+node tests/turbo-mdtest.cjs            # turbo transport deep checks (incl. turbo+tor region)
+node tests/bench-loopback.cjs          # 32 MB incompressible loopback medians (transport CPU overhead)
+node tests/bench-external.cjs          # 8 MB TLS downloads via speed.cloudflare.com (real-world medians)
+```
+
+`tests/` is plain Node + playwright-core; nothing here ships with production deploys.
 
 ## Run it
 

@@ -111,6 +111,11 @@
 
 	const TRANSPORTS = {
 		libcurl: () => ["/libcurl/index.mjs", [{ websocket: wispURL(regionActive() ? "tor" : "") }]],
+		turbo: () => [
+			"/vendor/turbo/index.mjs",
+			// turbo's own wispurr region (big windows) unless Tor region is on
+			[{ wisp: wispURL(regionActive() ? "tor" : "turbo"), connections: [250, 64] }],
+		],
 		epoxy: () => ["/vendor/epoxy/index.mjs", [{ wisp: wispURL(regionActive() ? "tor" : "") }]],
 		bare: () => ["/baremod/index.mjs", [location.origin + "/bare/"]],
 		// Legacy client-side Tor: libcurl attaches SOCKS5 through the wisp

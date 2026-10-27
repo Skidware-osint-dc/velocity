@@ -99,6 +99,7 @@ app.use("/baremux/", express.static(paths.baremux, STATIC_OPTS));
 app.use("/libcurl/", express.static(paths.libcurl, STATIC_OPTS));
 app.use("/epoxy/", express.static(paths.epoxy, STATIC_OPTS));
 app.use("/baremod/", express.static(paths.baremod, STATIC_OPTS));
+app.use("/vendor/turbo/", express.static(path.join(PUBLIC, "vendor", "turbo"), STATIC_OPTS));
 app.use(express.static(PUBLIC, { index: "index.html", fallthrough: true, maxAge: 0 }));
 
 // ---- search suggestions (server-side to dodge CORS) ----
@@ -131,11 +132,31 @@ app.get("/suggest", async (req, res) => {
 app.get("/api/capabilities", (req, res) => {
 	res.json({
 		wispEngine: wispPool ? "wispurr" : "wisp-js",
-		regions: ["", ...KNOWN_REGIONS],
+		// don't advertise the benchmark loopback region to clients
+		regions: ["", ...[...KNOWN_REGIONS].filter((r) => r !== "bench")],
 		torMode: KNOWN_REGIONS.has("tor") ? "server" : "client",
 		customWispAllowed: true,
 		siteLocked: !!SITE_PASSWORD,
 	});
+});
+
+// deterministic payload generator for transport benchmarks
+app.get("/api/perf-bin", (req, res) => {
+	const bytes = Math.min(Number(req.query.bytes) || 1 << 24, 1 << 26); // ≤64MB
+	res.setHeader("content-type", "application/octet-stream");
+	res.setHeader("cache-control", "no-store");
+	const chunk = Buffer.allocUnsafe(256 * 1024).fill(65);
+	const total = bytes;
+	let sent = 0;
+	const write = () => {
+		while (sent < total) {
+			const n = Math.min(chunk.length, total - sent);
+			sent += n;
+			if (!res.write(chunk.subarray(0, n))) return void res.once("drain", write);
+		}
+		res.end();
+	};
+	write();
 });
 
 app.get("/healthz", (req, res) => {
@@ -145,7 +166,7 @@ app.get("/healthz", (req, res) => {
 		version: pkg.version,
 		uptime: Math.round(process.uptime()),
 		wisp: wispPool ? "wispurr" : "wisp-js",
-		regions: wispPool ? ["", ...wispPool.regions.keys()] : [""],
+		regions: wispPool ? ["", ...wispPool.regions.keys()].filter((r) => r !== "bench") : [""],
 		tor: Date.now() - torState.at < 30_000 ? torState.running : null, // refreshes via /api/tor/status
 		engines: {
 			scramjet: read("@mercuryworkshop/scramjet"),
@@ -196,7 +217,7 @@ try {
 
 const WISP_BASE = "/wisp/";
 // region names are known even if wispurr failed to spawn (wisp-js routes them)
-const KNOWN_REGIONS = new Set(Object.keys(regionProxies()));
+const KNOWN_REGIONS = new Set([...Object.keys(regionProxies()), "bench"]);
 const wispRegionOf = (url) => {
 	const p = String(url || "").split(/[?#]/)[0];
 	if (p === WISP_BASE) return "";
@@ -243,11 +264,26 @@ server.on("upgrade", (req, socket, head) => {
 				if (wispPool?.default?.ready) return wispPool.default.route(req, socket, head);
 				return wisp.routeRequest(req, socket, head);
 			}
-			// named region → wisp-js + hostname-preserving SOCKS socket (.onion works here)
-			const proxy = wispPool?.regions.get(region)?.proxy ?? regionProxies()[region];
-			if (!proxy) return socket.destroy();
-			if (process.env.WISP_LOG) console.log(`[wisp] region upgrade "${region}" → socks ${proxy}`);
-			return wisp.routeRequest(req, socket, head, { TCPSocket: sockClassFor(proxy) });
+			// "bench": wisp-js direct egress (loopback allowed) for transport benchmarks
+			if (region === "bench") {
+				if (process.env.WISP_LOG) console.log("[wisp] bench upgrade → wisp-js direct");
+				return wisp.routeRequest(req, socket, head);
+			}
+			const meta = wispPool?.regions.get(region) ?? (regionProxies()[region] && { proxy: regionProxies()[region] });
+			if (!meta) return socket.destroy();
+			// spawned wispurr worker (e.g. turbo: same egress, huge windows)
+			if (typeof meta.route === "function") {
+				if (process.env.WISP_LOG) console.log(`[wisp] region upgrade "${region}" → wispurr worker`);
+				if (meta.ready) return meta.route(req, socket, head);
+				// region worker wedged/crashed: degrade to default egress instead
+				// of killing the websocket — connectivity beats throughput
+				if (process.env.WISP_LOG) console.log(`[wisp] region "${region}" unhealthy ↓ default`);
+				if (wispPool?.default?.ready) return wispPool.default.route(req, socket, head);
+				return wisp.routeRequest(req, socket, head);
+			}
+			// wisp-js + hostname-preserving SOCKS socket (.onion works here)
+			if (process.env.WISP_LOG) console.log(`[wisp] region upgrade "${region}" → socks ${meta.proxy}`);
+			return wisp.routeRequest(req, socket, head, { TCPSocket: sockClassFor(meta.proxy) });
 		}
 		socket.end();
 	} catch {
